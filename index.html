@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 검색 노출 방지일 뿐 접근통제가 아니다. 비공개 운영은 README §8 참조 -->
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>IT System Cost Overview</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="css/dashboard.css">
+</head>
+<body>
+  <header class="top">
+    <div class="top__title">
+      <p class="eyebrow">IT SYSTEM COST OVERVIEW</p>
+      <h1>IT System 비용 현황 <span class="print-only" id="printYear"></span></h1>
+      <p class="top__meta" id="meta">데이터를 불러오는 중…</p>
+    </div>
+    <div class="top__controls">
+      <div class="updated">
+        <span>Data Updated</span>
+        <strong id="updated">–</strong>
+      </div>
+      <button type="button" class="btn no-print" id="printBtn">Print / PDF</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <div id="banner"></div>
+
+    <section class="hero" id="hero" aria-label="연간 비용 합계"></section>
+    <div id="alert"></div>
+
+    <section class="trend" aria-label="연도별 추이">
+      <figure class="chart-card chart-card--total">
+        <figcaption><b>IT System 비용 합계</b> 연도별 추이
+          <span class="legend"><i class="dot dot--dep"></i>무형자산상각비 <i class="dot dot--svc"></i>전산용역비</span></figcaption>
+        <div class="chart" id="totalYearChart"></div>
+      </figure>
+      <figure class="chart-card chart-card--dep">
+        <figcaption><b>무형자산상각비</b> 연도별 추이</figcaption>
+        <div class="chart" id="depYearChart"></div>
+      </figure>
+    </section>
+    <p class="trend__hint no-print">막대를 선택하면 해당 연도의 상세 내역이 열립니다.</p>
+
+    <section class="detail" id="detail" hidden aria-labelledby="detailTitle">
+      <div class="detail__head">
+        <h2 id="detailTitle">상세 내역</h2>
+        <label class="search no-print">
+          <span class="sr-only">System명 검색</span>
+          <input type="search" id="search" placeholder="System명 검색" autocomplete="off">
+        </label>
+        <button type="button" class="btn btn--ghost no-print" data-close-detail>닫기 ✕</button>
+      </div>
+
+      <section class="sub sub--dep" id="depSub">
+        <div class="sub__head" id="depHead"></div>
+        <div class="table-wrap"><table class="tbl" id="depTable"></table></div>
+      </section>
+
+      <section class="sub sub--svc" id="svcSub">
+        <div class="sub__head" id="svcHead"></div>
+        <div class="table-wrap"><table class="tbl" id="svcTable"></table></div>
+      </section>
+
+      <section id="check" aria-label="데이터 점검"></section>
+    </section>
+
+    <details class="foot no-print">
+      <summary>산정 기준 · 관리자</summary>
+      <ul>
+        <li>무형자산상각비 = 월 상각액 × 선택 연도와 상각기간이 겹치는 개월 수 (시작월·종료월 포함). 월 상각액은 Excel 값 우선, 없으면 총 금액 ÷ 총 상각개월.</li>
+        <li>전산용역비 = 계약금액을 계약기간에 걸쳐 월할 안분. 현재 계약이 끝나면 <b>동일 주기 · 동일 금액으로 연장</b>된다고 가정합니다 (Excel에 '차기계약금액'이 있으면 그 금액 사용).</li>
+        <li>계약 주기: 항목명/기간의 'N년' 명시 → 시작·종료일의 달력 월 주기 → 실제 일수 순으로 판단.</li>
+        <li>비고에 'Project 귀속' · '금액 미정' · '일정 미정'이 있는 전산용역은 집계에서 제외합니다.</li>
+        <li>0원 · 공란 · 날짜로 변환할 수 없는 기간 · 존재하지 않는 날짜는 보정하지 않고 '미집계'로 표시하며 합계에서 제외합니다.</li>
+      </ul>
+      <div class="admin">
+        <b>새 Excel 반영 전 미리보기</b>
+        <p>선택한 Excel은 이 브라우저 안에서만 읽습니다. 서버로 전송되거나 저장되지 않으며, 다른 사용자 화면에는 영향이 없습니다.
+          실제 반영은 <code>data/current.xlsx</code> 파일 교체로 합니다 (README 참조).</p>
+        <input type="file" id="localFile" accept=".xlsx,.xlsm">
+      </div>
+    </details>
+  </main>
+
+  <div class="drawer-wrap" id="drawer" hidden>
+    <div class="drawer__backdrop" data-close></div>
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+      <button type="button" class="drawer__close" data-close aria-label="닫기">×</button>
+      <div id="drawerBody"></div>
+    </aside>
+  </div>
+  <div class="tip" id="tip" role="tooltip" hidden></div>
+
+  <script src="js/vendor/xlsx.core.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
