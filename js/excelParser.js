@@ -32,6 +32,7 @@ const ALIASES = {
   period: ['감가상각기간', '상각기간', '계약기간', '사용기간', '기간', 'period'],
   monthly: ['매월감가상각액', '월감가상각액', '월상각액', '매월상각액'],
   nextAmount: ['예상계약금액', '차기계약금액', '연장계약금액'],
+  spend: ['지출월', '지출시기', '지급월', '지급시기'],
   remark: ['비고', 'remark', 'remarks', 'note', 'notes'],
 };
 const FIELD = new Map(Object.entries(ALIASES).flatMap(([f, names]) => names.map((n) => [norm(n), f])));
@@ -177,6 +178,7 @@ function parseSheet(wb, key, utils) {
       amount: amt.value, amountText: text(cell('amount')),
       period: parsePeriod(text(cell('period'))),
       remark: text(cell('remark')),
+      spendText: text(cell('spend')),
       monthlyExcel: null, nextAmount: optionalNumber(cell('nextAmount')),
       raw: labels.map(({ c, label }) => ({ label, addr: utils.encode_cell({ r: r0 + r, c: c0 + c }), text: text(row[c]) })),
       issues: [],

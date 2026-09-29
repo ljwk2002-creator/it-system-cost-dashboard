@@ -64,6 +64,27 @@ assert.ok(ex[0].issues.length === 0 && ex[2].issues.length > 0, '제외 사유�
 const broken = book({ '감가상각액': [['항목명', '비고', '금액']], Sheet2: [['a']] });
 assert.match(broken.depreciation.error, /필수 Column.*기간/, '필수 Column 누락 오류');
 assert.match(broken.service.error, /Sheet를 찾을 수 없습니다/, '필수 Sheet 누락 오류');
+// 지출 월 해석
+assert.deepEqual(Svc.parseSpend('매년 4월 1회').lumps, [{ month: 4, amount: null }]);
+assert.equal(Svc.parseSpend('매월 6,500,000원씩').monthly, 6500000);
+assert.equal(Svc.parseSpend('매월 약 11,000,000원씩').monthly, 'even', "'약' → 계약금액 균등 분할");
+assert.deepEqual(Svc.parseSpend('매월 5,500,000원씩 +\n매년 28,000,000원씩').lumps, [{ month: null, amount: 28000000 }]);
+assert.ok(Svc.parseSpend('2028년 6월 재계약 예정').unparsed);
+const sp = (name, period, spendText, amount = 120) =>
+  Svc.prepareContracts([{ name, period: parsePeriod(period), amount, amountOk: true, nextAmount: null, spendText, issues: [] }])[0];
+const apr = sp('A', '2026.04.01~2027.03.31', '매년 4월 1회', 120e6);
+assert.deepEqual(Svc.spendInYear(apr, 2027).months.map((a) => a / 1e6), [0, 0, 0, 125, 0, 0, 0, 0, 0, 0, 0, 0], '연 1회 → 4월에만 지출 (갱신 120 → 125)');
+assert.ok(sp('B', '2026.01.01~2026.12.31', '매월 1원씩').issues.some((i) => i.type === 'data'), '지출 합계 ≠ 계약금액 감지');
+
+// 물가인상: 3~5% 범위에서 백만원 단위로 딱 떨어지는 금액 (4%에 가장 가까운 것)
+assert.equal(Svc.escalate(160e6), 166e6, '160 → 166');
+assert.equal(Svc.escalate(200e6), 208e6, '200 → 208 (정확히 4%)');
+assert.equal(Svc.escalate(40e6), 42e6, '40 → 42 (범위 안 유일한 값 = 5%)');
+assert.equal(Svc.escalate(37e6), 38e6, '37: 3~5% 안에 백만원 단위 없음 → 4% 인상액 반올림');
+for (const a of [23e6, 94e6, 115e6, 145e6, 1e9]) {
+  const r = Svc.escalate(a) / a - 1;
+  assert.ok(Svc.escalate(a) % 1e6 === 0 && r >= 0.03 - 1e-9 && r <= 0.05 + 1e-9, `${a / 1e6}: 3~5% · 백만원 단위`);
+}
 console.log('✓ 단위 검증 통과');
 
 /* ---------- 2) 예시 Excel 검증 ---------- */
@@ -96,22 +117,31 @@ near(totalMonthly, 69423273.75, '월 감가상각액 합계');
 near(Dep.totalInYear(D, 2027), 833079285, '2027년 상각비 = 69,423,273.75 × 12');
 near(totalAmt, data.depreciation.excelTotal.amount, 'Excel TOTAL 행과 일치');
 
-const pds = S.find((i) => i.name.startsWith('PDS'));
+const find = (n) => S.find((i) => i.name.startsWith(n));
+const pds = find('PDS');
 const pv = Svc.yearView(pds, 2027);
-const [next] = Svc.renewals(pds, pds.cur.e + 1);
+const [next] = Svc.renewalPeriods(pds, pds.cur.e + 1);
 assert.equal(`${Svc.fmtDn(next.s)}~${Svc.fmtDn(next.e)}`, '2027.04.01~2028.03.31', 'PDS 연장 가정 기간');
-near(pv.cur, 40000000, 'PDS 2027 현재 계약분 = 160,000,000 × 3/12');
-near(pv.ext, 120000000, 'PDS 2027 연장 가정분 = 160,000,000 × 9/12');
-pv.months.forEach((a, i) => near(a, 160000000 / 12, `PDS ${i + 1}월 = 160,000,000 ÷ 12`));
+assert.equal(next.amount, 166e6, 'PDS 갱신 160 → 166 (+3.75%, 백만원 단위)');
+near(pv.cur, 40e6, 'PDS 2027 현재 계약분 = 160 × 3/12');
+near(pv.ext, 124.5e6, 'PDS 2027 연장 가정분 = 166 × 9/12');
 near(sum(pv.months, (a) => a), pv.total, '월별 합 = 연간 합');
 
-// 2026-09-28 사용자 지시 반영분 (data/current.xlsx 비고·기간)
-const find = (n) => S.find((i) => i.name.startsWith(n));
-near(Svc.yearView(find('배관설계관리시스템(S-GEN)'), 2027).total, 23000000, 'S-GEN 자동 연장: 2027년 23,000,000');
-near(Svc.yearView(find('Agentic AI(유지보수)'), 2027).total, 100000000, 'Agentic AI 2026.10.30~ 1년 계약 + 연장 → 2027년 100,000,000');
+// 2026-09-28 사용자 지시 반영분 (data/current.xlsx 비고·기간) + 2026-09-29 물가인상
+near(Svc.yearView(find('배관설계관리시스템(S-GEN)'), 2027).total, 23e6 * 6 / 12 + 24e6 * 6 / 12, 'S-GEN: 1~6월 현재 23 + 7~12월 갱신 24');
+near(Svc.yearView(find('Agentic AI(유지보수)'), 2027).total, 100e6 * (9 + 29 / 31) / 12 + 104e6 * (2 + 2 / 31) / 12, 'Agentic AI: 갱신 100 → 104');
 assert.deepEqual(
   S.filter((i) => i.excluded).map((i) => [i.name.split(' ')[0], i.excluded]),
   [['ePMCS', '일정 미정'], ['MIDAS', '금액 미정'], ['벤틀리', 'Project 귀속']], '비고 기반 집계 제외');
 assert.ok(S.filter((i) => i.excluded).every((i) => !i.issues.length && Svc.yearView(i, 2027) === null), '집계 제외는 오류가 아니며 합계에서 빠짐');
 assert.equal(S.filter((i) => !i.excluded && !Svc.yearView(i, 2027)).length, 0, '미집계(오류) 0건');
+
+// 2026-09-29 '지출 월' 열
+const spend = (n) => Svc.spendInYear(find(n), 2027).months;
+near(spend('PDS')[3], 166e6, 'PDS: 4월에 갱신 금액 166');
+assert.equal(spend('PDS').filter(Boolean).length, 1, 'PDS: 매년 4월 1회 → 나머지 달 지출 없음');
+spend('문서관리시스템 운영 관리').forEach((a) => near(a, 81e6 / 12, '운영 관리: 갱신 78 → 81, 매월 6.5 × 81/78'));
+near(spend('문서관리시스템 유지보수')[5], (5.5e6 + 28e6) * 98 / 94, '유지보수 6월: (매월 5.5 + 연 1회 28, 시작월 가정) × 갱신 98/94');
+near(spend('Navisworks')[0], 138e6 / 12, "Navisworks 1월: '매월 약' → 현재 계약 138 ÷ 12");
+near(spend('Navisworks')[11], 144e6 / 12, 'Navisworks 12월: 갱신 144 ÷ 12');
 console.log('\n✓ 예시 Excel 검증 통과 (§38)');

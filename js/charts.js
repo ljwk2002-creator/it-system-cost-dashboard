@@ -12,8 +12,7 @@ export function columnChart({ data, selected = null, width, height = 270, label,
   const slot = (width - pad.l - pad.r) / data.length;
   const bw = Math.min(64, slot * 0.6);
   const base = pad.t + ih;
-  const compact = slot < 60; // 좁은 화면: 정수 · 작은 글씨 (정확한 값은 Tooltip)
-  const text = (d) => label(d, compact ? 0 : 1);
+  const compact = slot < 60; // 좁은 화면: 작은 글씨
 
   const bars = data.map((d, i) => {
     const sx = pad.l + slot * i, cx = sx + slot / 2;
@@ -25,10 +24,10 @@ export function columnChart({ data, selected = null, width, height = 270, label,
       top -= ph;
       return `<rect class="col ${p.cls}" x="${cx - bw / 2}" y="${top}" width="${bw}" height="${ph}" rx="${d.parts ? 0 : 3}"/>`;
     }).join('');
-    return `<g class="bar${sel ? ' is-sel' : ''}" data-key="${d.key}" data-tip="${tip(d)}" tabindex="0" role="button" aria-label="${d.name} ${label(d, 1)} ${unit}">
+    return `<g class="bar${sel ? ' is-sel' : ''}" data-key="${d.key}" data-tip="${tip(d)}" tabindex="0" role="button" aria-label="${d.name} ${label(d)} ${unit}">
       <rect class="hit" x="${sx}" y="0" width="${slot}" height="${height}"/>
       ${cols}
-      <text class="val" x="${cx}" y="${base - h - 21}">${text(d)}<tspan class="val__u" x="${cx}" dy="14">${unit}</tspan></text>
+      <text class="val" x="${cx}" y="${base - h - 21}">${label(d)}<tspan class="val__u" x="${cx}" dy="14">${unit}</tspan></text>
       <text class="xl" x="${cx}" y="${height - 8}">${d.name}</text>
     </g>`;
   }).join('');
