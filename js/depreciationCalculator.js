@@ -33,6 +33,17 @@ export const amountInYear = (it, year) => (it.monthly ?? 0) * monthsInYear(it, y
 
 export const totalInYear = (items, year) => items.reduce((s, it) => s + amountInYear(it, year), 0);
 
+/** 선택 연도 상각액 중 비고의 Project 비용처리 기간에 해당하는 금액 (기간 미기재 = 전체) */
+export function projectInYear(it, year) {
+  const p = it.project;
+  if (!p || it.monthly == null) return 0;
+  const lo = Math.max(it.startMi, year * 12, p.start ? mIdx(p.start) : -Infinity);
+  const hi = Math.min(it.endMi, year * 12 + 11, p.end ? mIdx(p.end) : Infinity);
+  return Math.max(0, hi - lo + 1) * it.monthly;
+}
+
+export const projectTotalInYear = (items, year) => items.reduce((s, it) => s + projectInYear(it, year), 0);
+
 /** 선택 연도 말 기준 누적 상각개월 */
 export const elapsedAtYearEnd = (it, year) => Math.min(it.months, Math.max(0, year * 12 + 11 - it.startMi + 1));
 

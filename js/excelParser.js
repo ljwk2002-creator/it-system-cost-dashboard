@@ -46,10 +46,62 @@ const SHEETS = {
 
 // 전산용역비 비고에 관리자가 명시한 '집계 제외' 사유. 오류가 아니라 알려진 상태이므로 ⚠ 대신 제외로 표시한다.
 const EXCLUDE = [
-  [/(project|프로젝트|pjt)\s*귀속/i, 'Project 귀속'],
   [/금액\s*미정/, '금액 미정'],
   [/일정\s*미정/, '일정 미정'],
 ];
+
+// 비고의 Project 비용처리 지시. 예) "2026년~2027년 LNIC Project에서 비용처리" · "2026.12~2028.11 LNIC Project 귀속"
+const PROJECT = /([A-Za-z0-9&-]+)\s*(?:project|프로젝트|pjt)(?:\s*에서)?\s*(?:귀속|비용\s*처리)/i;
+const PROJECT_RANGE = /(\d{4})\s*(?:[.\-/년]\s*(\d{1,2})(?:\s*[.\-/월]\s*\d{1,2})?)?[^~〜∼\d]{0,3}[~〜∼–-]\s*(\d{4})\s*(?:[.\-/년]\s*(\d{1,2}))?/;
+
+// 비고의 '리스계약 중' 지시: 그 기간 비용은 0원. 예) "2026년~2027년 LNIC Project에서 205백만원 리스계약 중"
+const LEASE = /리스\s*계약\s*중/;
+// 비고 · 지출 월의 '일시납': 계약기간 월할 안분 대신 지급월에 전액 비용 인식
+const LUMP_SUM = /일시납/;
+
+const SINGLE = /(\d{4})\s*(?:년|[.\-/]\s*(\d{1,2}))/; // 기간 대신 한 해(2027년) 또는 한 달(2027.12)
+// 특정 연도 화면에만 보이는 비고 줄. 예) "2026년: 첫해 유지보수비 0원" ('0원'이 있으면 그해 계약금액·비용 0원)
+const YEAR_NOTE = /^\s*(\d{4})\s*년\s*:\s*(.+)$/;
+
+/** 기간 → { start, end } (월 단위: 시작월 1일 ~ 종료월 말일, 연도만 있으면 1월~12월). 없거나 해석 불가면 전체 기간(null) */
+function parseRange(text) {
+  const r = text.match(PROJECT_RANGE);
+  if (r) {
+    const [m1, m2] = [+(r[2] ?? 1), +(r[4] ?? 12)];
+    if (m1 < 1 || m1 > 12 || m2 < 1 || m2 > 12) return { start: null, end: null };
+    return { start: { y: +r[1], m: m1, d: 1 }, end: { y: +r[3], m: m2, d: dim(+r[3], m2) } };
+  }
+  const s = text.match(SINGLE);
+  const [y, m] = s ? [+s[1], s[2] ? +s[2] : null] : [];
+  if (!s || (m != null && (m < 1 || m > 12))) return { start: null, end: null };
+  return { start: { y, m: m ?? 1, d: 1 }, end: { y, m: m ?? 12, d: dim(y, m ?? 12) } };
+}
+
+const lineOf = (remark, re) => String(remark ?? '').split('\n').find((l) => re.test(l));
+
+/** 비고 → { name, start, end }. 비용은 그대로 집계하고, 해당 기간분을 Project 비용으로 구분 표시한다 (지시가 적힌 줄의 기간). */
+export function parseProject(remark) {
+  const line = lineOf(remark, PROJECT);
+  return line ? { name: line.match(PROJECT)[1], ...parseRange(line) } : null;
+}
+
+/** 비고 → 리스계약 기간 { start, end } (그 기간 비용 0원) 또는 null */
+export function parseLease(remark) {
+  const line = lineOf(remark, LEASE);
+  return line ? parseRange(line) : null;
+}
+
+/** 비고 → { base: 연도 지정 줄을 뺀 비고, notes: { 연도: 그해에만 보일 비고 }, zeroYears: [계약금액·비용 0원 연도] } */
+export function parseYearNotes(remark) {
+  const lines = String(remark ?? '').split('\n');
+  const notes = {};
+  for (const l of lines) { const m = l.match(YEAR_NOTE); if (m) notes[+m[1]] = m[2].trim(); }
+  return {
+    base: lines.filter((l) => !YEAR_NOTE.test(l)).join('\n').trim(),
+    notes,
+    zeroYears: Object.keys(notes).filter((y) => /(?<![\d,])0\s*원/.test(notes[y])).map(Number),
+  };
+}
 
 const TOTAL = /^(sub|grand)?total$|^(소|총|총합)?계$|^합계$/;
 const SUBTOTAL = /^subtotal$|^소계$/;
@@ -178,6 +230,10 @@ function parseSheet(wb, key, utils) {
       amount: amt.value, amountText: text(cell('amount')),
       period: parsePeriod(text(cell('period'))),
       remark: text(cell('remark')),
+      ...(({ base, notes, zeroYears }) => ({
+        remarkBase: base, yearNotes: notes, zeroYears, project: parseProject(base), lease: parseLease(base),
+      }))(parseYearNotes(text(cell('remark')))),
+      lumpSum: LUMP_SUM.test(`${text(cell('remark'))} ${text(cell('spend'))}`),
       spendText: text(cell('spend')),
       monthlyExcel: null, nextAmount: optionalNumber(cell('nextAmount')),
       raw: labels.map(({ c, label }) => ({ label, addr: utils.encode_cell({ r: r0 + r, c: c0 + c }), text: text(row[c]) })),

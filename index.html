@@ -33,14 +33,28 @@
     <section class="hero" id="hero" aria-label="연간 비용 합계"></section>
     <div id="alert"></div>
 
+    <!-- Project 비용 해치 (charts.js .proj) -->
+    <svg class="svg-defs" aria-hidden="true" focusable="false"><defs>
+      <pattern id="projHatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="6" height="6" fill="#FACC15" fill-opacity=".2"/>
+        <line x1="0" y1="0" x2="0" y2="6" stroke="#CA8A04" stroke-width="2" stroke-opacity=".6"/>
+      </pattern></defs></svg>
+
     <section class="trend" aria-label="연도별 추이">
       <figure class="chart-card chart-card--total">
-        <figcaption><b>IT System 비용 합계</b> 연도별 추이
-          <span class="legend"><i class="dot dot--dep"></i>무형자산상각비 <i class="dot dot--svc"></i>전산용역비</span></figcaption>
+        <figcaption>
+          <div><b>IT System 비용 합계</b> 연도별 추이
+            <span class="legend"><span><i class="dot dot--dep"></i>무형자산상각비</span><span><i class="dot dot--svc"></i>전산용역비</span><span class="legend__proj" hidden><i class="dot dot--proj"></i><span></span></span></span></div>
+          <div class="proj-sum" id="projSum"></div>
+        </figcaption>
         <div class="chart" id="totalYearChart"></div>
+        <p class="proj-foot" id="projNote"></p>
       </figure>
       <figure class="chart-card chart-card--dep">
-        <figcaption><b>무형자산상각비</b> 연도별 추이</figcaption>
+        <figcaption>
+          <div><b>무형자산상각비</b> 연도별 추이
+            <span class="legend"><span class="legend__proj" hidden><i class="dot dot--proj"></i><span></span></span></span></div>
+        </figcaption>
         <div class="chart" id="depYearChart"></div>
       </figure>
     </section>
@@ -76,7 +90,10 @@
         <li>전산용역비 = 계약금액을 계약기간에 걸쳐 월할 안분. 현재 계약이 끝나면 <b>동일 주기로 연장되고, 갱신마다 전년 대비 3~5% 인상</b>된다고 가정합니다. 인상 금액은 백만원 단위로 딱 떨어지는 금액 중 4%에 가장 가까운 값이며, 소액 계약처럼 3~5% 안에 백만원 단위 금액이 없으면 4% 인상액을 백만원 단위로 반올림합니다 (Excel에 '차기계약금액'이 있으면 첫 갱신에 그 금액 사용).</li>
         <li>화면의 모든 금액은 백만원 단위, 소수점 아래 1자리로 표시합니다. 막대·금액에 마우스를 올리면 원 단위 금액을 볼 수 있습니다.</li>
         <li>계약 주기: 항목명/기간의 'N년' 명시 → 시작·종료일의 달력 월 주기 → 실제 일수 순으로 판단.</li>
-        <li>비고에 'Project 귀속' · '금액 미정' · '일정 미정'이 있는 전산용역은 집계에서 제외합니다.</li>
+        <li>비고에 '금액 미정' · '일정 미정'이 있는 전산용역은 집계에서 제외합니다.</li>
+        <li>비고에 'YYYY.MM~YYYY.MM ○○ Project 귀속(비용처리)'이 있으면 금액은 그대로 집계하고, 그 기간분을 Project 비용으로 구분해 그래프에 노란 해치 박스로 표시합니다. 전산용역 계약 시작 전 기간이 포함되면 그 기간에도 같은 금액·주기로 비용이 발생한다고 가정합니다.</li>
+        <li>Project 확정 처리액이 정해진 연도는 IT System 비용 합계 · 무형자산상각비 그래프의 Project 비용을 행별 계산 대신 확정 금액으로 표기합니다 (합계 그래프 아래 비고 참고).</li>
+        <li>전산용역 비고에 '일시납'이 있으면 월할 안분 대신 지급월(지출 월)에 전액을 비용으로 인식하고, '리스계약 중'이 있으면 그 기간 비용을 0원으로 표시합니다. 비고의 'YYYY년: …' 줄은 그해에만 비고로 보이며, '0원'이 있으면 그해 계약금액·비용을 0원으로 처리합니다.</li>
         <li>0원 · 공란 · 날짜로 변환할 수 없는 기간 · 존재하지 않는 날짜는 보정하지 않고 '미집계'로 표시하며 합계에서 제외합니다.</li>
       </ul>
       <div class="admin">

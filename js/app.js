@@ -1,6 +1,6 @@
 /**
  * app.js — 데이터 로드 · 상태 · 화면 렌더링.
- * 화면의 모든 금액·항목·기간은 data/current.xlsx에서 읽어 계산한다 (코드에 데이터 없음).
+ * 화면의 모든 금액·항목·기간은 data/current.xlsx에서 읽어 계산한다 (코드에 데이터 없음 — 예외: Excel에 없는 확정 처리액 PROJECT_FIXED).
  * Excel 원문 문자열은 반드시 esc()를 거쳐 HTML에 들어간다.
  * 화면 구성: 연간 합계 카드 + 연도별 추이 2개 → 연도 선택 시 상세 내역(무형자산 · 전산용역 표)
  */
@@ -13,6 +13,11 @@ const DATA_URL = 'data/current.xlsx'; // 관리자가 교체하는 파일 (READM
 const MONTHS = Array.from({ length: 12 }, (_, i) => `${i + 1}월`);
 const DEP_STATUS = { active: '상각 중', planned: '상각 예정', done: '상각 완료', check: '확인 필요' };
 const ISSUE = { date: '날짜 확인 필요', amount: '금액 확인 필요', period: '기간 확인 필요', data: '데이터 확인 필요' };
+const SVC_PARTS = [['pre', '계약 전 Project 기간분'], ['cur', '현재 계약분'], ['ext', '연장 가정분']];
+const SPEND_KIND = { pre: ' (계약 전 Project 기간 가정분)', ext: ' (연장 가정분)' };
+// 연도별 Project 확정 처리액: 그해 Project 비용(무형자산+전산용역)은 비고 기준 행별 계산 대신 이 금액으로 표기.
+// Excel에 없는 경영 확정값이라 코드에 둔다 (2026-10-01 지시).
+const PROJECT_FIXED = { 2026: { amount: 405e6, note: '판관비로 처리될 비용 중 405백만원 LNIC Project로 처리' } };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -72,6 +77,8 @@ function ingest(buf, source) {
 
   state.data = data;
   state.source = { ...source, saved: validDate(wb.Props?.ModifiedDate) };
+  const names = [...new Set([...D.items, ...S.items].map((i) => i.project?.name).filter(Boolean))];
+  state.projLabel = `${names.join('·')} Project`.trim();
   const max = Math.max(sum(D.items, (i) => i.amount), sum(S.items, (i) => i.amount));
   unit = max >= 1e10 ? { div: 1e8, label: '억원' } : { div: 1e6, label: '백만원' };
   initYears();
@@ -116,14 +123,44 @@ function closeDetail() {
 }
 
 const svcYear = (y) => sum(state.data.service.items, (it) => Svc.yearTotal(it, y));
+// Project 비용(비고의 비용처리 기간분). 합계는 확정 처리액이 있으면 그 금액
+const projDep = (y) => Dep.projectTotalInYear(state.data.depreciation.items, y);
+const projSvc = (y) => sum(state.data.service.items, (it) => Svc.projectInYear(it, y));
+const projYear = (y) => PROJECT_FIXED[y]?.amount ?? projDep(y) + projSvc(y);
+const projDepShown = (y) => PROJECT_FIXED[y]?.amount ?? projDep(y); // 확정 처리액은 무형자산 그래프에도 같은 금액으로 표기 (2026-10-01 지시)
+/** 선택 연도가 비고의 리스계약 기간(비용 0원)에 걸리는지 */
+const leasedIn = (it, Y) => !!it.lease && (!it.lease.start || (it.lease.start.y <= Y && it.lease.end.y >= Y));
+/** 선택 연도 비고: 'YYYY년:' 줄이 있으면 그해에는 그 내용만, 아니면 나머지 비고 */
+const remarkIn = (it, Y) => it.yearNotes?.[Y] ?? it.remarkBase ?? it.remark;
+const zeroYear = (it, Y) => !!it.zeroYears?.includes(Y); // 비고 'YYYY년: … 0원' → 그해 계약금액·비용 0원
+const contractIn = (it, Y) => (zeroYear(it, Y) ? 0 : it.amount);
+const partsText = (v) => SVC_PARTS.filter(([k]) => inUnit(v[k]) !== '0.0').map(([k, l]) => `${l} ${plain(v[k])}`).join(' + ');
+const projTag = (v) => (v > 0 ? `<small class="proj-tag" data-tip="${esc(`${state.projLabel} 비용처리 ${won(v)}`)}">${esc(state.projLabel)} ${inUnit(v)}<span class="u">${unit.label}</span></small>` : '');
+const projRange = (p) => (p.start ? `${fmtYM(p.start)} ~ ${fmtYM(p.end)}` : '전체 기간');
+
+/* ---------- 비교 연도 대비 변동 (상세 표 빨간 테두리) ---------- */
+// 비교 연도: 전년. 단 표시 첫해(올해)는 전년이 없으므로 다음 해와 비교 → 2026 ↔ 2027 양쪽 모두 표시
+const cmpYear = (Y) => (state.years.includes(Y - 1) || !state.years.includes(Y + 1) ? Y - 1 : Y + 1);
+// 표시 단위 반올림 · 일 단위 계약의 연간 1% 미만 흔들림은 변동으로 보지 않음
+const differs = (a, b) => Math.abs(a - b) > Math.max(0.05 * unit.div, Math.max(Math.abs(a), Math.abs(b)) * 0.01);
+const chgNote = (C, v, proj, leased) => `<small class="chg-note" data-tip="${esc(`${C}년 대비 변동 (전산용역비는 물가인상분 제외 · 연간 계약금액 기준)`)}">${C}년 ${plain(v)}${proj > 0 ? ` · ${esc(state.projLabel)}` : leased ? ' · 리스계약' : ''}</small>`;
+const chgLegend = (C, n) => `<br><span class="chg-legend"><i></i>빨간 테두리: ${C}년 대비 변동 ${n}건</span>`;
 
 /* ---------- 렌더링 ---------- */
 function render() {
   const { depreciation: D, service: S } = state.data;
   const Y = state.year;
-  const dep = D.items.map((it) => ({ it, st: Dep.statusInYear(it, Y), months: Dep.monthsInYear(it, Y), amount: Dep.amountInYear(it, Y) }));
-  const svc = S.items.map((it) => ({ it, v: Svc.yearView(it, Y) }));
-  const ctx = { Y, D, S, dep, svc, depTotal: sum(dep, (r) => r.amount), svcTotal: sum(svc, (r) => r.v?.total), check: checkSummary(D, S) };
+  const C = cmpYear(Y);
+  const dep = D.items.map((it) => ({ it, st: Dep.statusInYear(it, Y), months: Dep.monthsInYear(it, Y), amount: Dep.amountInYear(it, Y), proj: Dep.projectInYear(it, Y),
+    chg: differs(Dep.amountInYear(it, Y), Dep.amountInYear(it, C)) || differs(Dep.projectInYear(it, Y), Dep.projectInYear(it, C)) }));
+  const svc = S.items.map((it) => {
+    const v = Svc.yearView(it, Y);
+    // Excel 계약 시작 전 Project 기간 비용 = 계약에 없던 신규 비용 → 그해 변동으로 표시 (예: 3JCNS 유지보수 2026·2027)
+    const pre = (v?.pre ?? 0) > 0;
+    return { it, v, proj: Svc.projectInYear(it, Y), pre,
+      chg: pre || differs(Svc.yearTotal(it, Y, true), Svc.yearTotal(it, C, true)) || differs(Svc.projectInYear(it, Y, true), Svc.projectInYear(it, C, true)) };
+  });
+  const ctx = { Y, C, D, S, dep, svc, depTotal: sum(dep, (r) => r.amount), svcTotal: sum(svc, (r) => r.v?.total), check: checkSummary(D, S) };
   renderHeader(ctx);
   renderHero(ctx);
   renderAlert(ctx);
@@ -154,6 +191,7 @@ function renderHero({ Y, D, S, depTotal, svcTotal }) {
   const total = depTotal + svcTotal;
   const prev = (D.error ? 0 : Dep.totalInYear(D.items, Y - 1)) + (S.error ? 0 : svcYear(Y - 1));
   const pct = (v) => (total ? (v / total) * 100 : 0);
+  const proj = projYear(Y), fixed = PROJECT_FIXED[Y];
   const part = (cls, label, v) => `<button type="button" class="split__item" data-open-detail="#${cls}Sub">
       <span class="split__top"><i class="dot dot--${cls}"></i><span class="split__name">${label}</span><span class="split__pct">${pct(v).toFixed(0)}%</span></span>
       <b data-tip="${esc(won(v))}">${inUnit(v)}<span class="u">${unit.label}</span></b></button>`;
@@ -164,6 +202,8 @@ function renderHero({ Y, D, S, depTotal, svcTotal }) {
       ${bigMoney(total, 'hero__value')}
       <p class="hero__sub">월평균 ${plain(total / 12)}${yoy(total, prev, Y)}
         ${missing.length ? ` · <span class="warn">⚠ ${missing.join('·')} 데이터 오류로 제외</span>` : ''}</p>
+      ${proj > 0 ? `<p class="hero__proj"><i class="dot dot--proj"></i>그중 ${esc(state.projLabel)} 비용
+        <b data-tip="${esc(won(proj))}">${inUnit(proj)}<span class="u">${unit.label}</span></b>${fixed ? `<small>비고: ${esc(fixed.note)}</small>` : ''}</p>` : ''}
       <button type="button" class="btn btn--primary no-print" data-open-detail="#detail">${Y}년 상세 내역 보기 →</button>
     </div>
     <div class="hero__split">
@@ -249,16 +289,18 @@ function drawChart(el) {
   if (args) el.innerHTML = columnChart({ ...args, width: Math.max(260, el.clientWidth) });
 }
 function renderCharts({ Y, D, S }) {
-  const common = { selected: Y, unit: unit.label, label: (d) => inUnit(d.value) };
+  const P = state.projLabel;
+  const common = { selected: Y, unit: unit.label, label: (d) => inUnit(d.value), projLabel: (d) => inUnit(d.proj) };
   const depOf = (y) => (D.error ? 0 : Dep.totalInYear(D.items, y));
   const svcOf = (y) => (S.error ? 0 : svcYear(y));
+  const projTip = (d) => (d.proj > 0 ? `\n▨ 그중 ${P} 비용 ${won(d.proj)}${PROJECT_FIXED[d.key] ? ' (확정 처리액)' : ''}` : '');
   setChart('totalYearChart', {
     ...common,
     data: state.years.map((y) => {
       const parts = [{ cls: 'seg--dep', value: depOf(y) }, { cls: 'seg--svc', value: svcOf(y) }];
-      return { key: y, name: String(y), value: parts[0].value + parts[1].value, parts };
+      return { key: y, name: String(y), value: parts[0].value + parts[1].value, parts, proj: projYear(y) };
     }),
-    tip: (d) => `${d.key}년 IT System 비용 합계 ${won(d.value)}\n무형자산상각비 ${won(d.parts[0].value)}\n전산용역비 ${won(d.parts[1].value)} (연장 가정 포함)\n선택하면 상세 내역`,
+    tip: (d) => `${d.key}년 IT System 비용 합계 ${won(d.value)}\n무형자산상각비 ${won(d.parts[0].value)}\n전산용역비 ${won(d.parts[1].value)} (연장 가정 포함)${projTip(d)}\n선택하면 상세 내역`,
   });
   if (D.error) {
     chartArgs.delete('depYearChart');
@@ -266,10 +308,23 @@ function renderCharts({ Y, D, S }) {
   } else {
     setChart('depYearChart', {
       ...common,
-      data: state.years.map((y) => ({ key: y, name: String(y), value: depOf(y) })),
-      tip: (d) => `${d.key}년 무형자산상각비 ${won(d.value)}\n선택하면 상세 내역`,
+      data: state.years.map((y) => ({ key: y, name: String(y), value: depOf(y), proj: projDepShown(y) })),
+      tip: (d) => `${d.key}년 무형자산상각비 ${won(d.value)}${projTip(d)}\n선택하면 상세 내역`,
     });
   }
+
+  // 우측 상단: Project 비용 합계 (표시 연도 기준) + 확정 처리액 비고
+  const pYears = state.years.filter((y) => projYear(y) > 0);
+  const pTotal = sum(pYears, projYear);
+  const range = pYears.length > 1 ? `${pYears[0]}~${pYears.at(-1)}년` : `${pYears[0]}년`;
+  $('#projSum').innerHTML = pYears.length ? `<p class="proj-sum__head"><i class="dot dot--proj"></i>${esc(P)} 비용 합계 <small>${range}</small></p>
+    <p class="proj-sum__value" data-tip="${esc(pYears.map((y) => `${y}년 ${won(projYear(y))}`).join('\n'))}">${inUnit(pTotal)}<span class="u">${unit.label}</span></p>` : '';
+  $('#projNote').innerHTML = pYears.filter((y) => PROJECT_FIXED[y])
+    .map((y) => `▨ ${y}년 ${esc(P)} 비용 ${plain(PROJECT_FIXED[y].amount)} — 비고: ${esc(PROJECT_FIXED[y].note)}`).join('<br>');
+  document.querySelectorAll('.legend__proj').forEach((el) => {
+    el.hidden = !(el.closest('.chart-card--dep') ? state.years.some((y) => projDepShown(y) > 0) : pYears.length);
+    el.lastChild.textContent = P;
+  });
 }
 
 /* ----- 공통 셀 ----- */
@@ -293,6 +348,10 @@ function periodTip(it) {
 const periodLabel = (it) => (it.period.status === 'invalid' ? '⚠ 날짜 확인 필요' : `⚠ ${it.kind === 'service' ? '계약기간' : '상각기간'} 확인 필요`);
 const periodWarn = (it) => `<span class="warn" data-tip="${esc(periodTip(it))}">${periodLabel(it)}</span><small class="raw">${esc(it.period.text || '(공란)')}</small>`;
 
+/** 상세 표 제목 아래: 그중 Project 비용 (행별 계산. 확정 처리액이 있는 연도는 그 사실을 함께 표시) */
+const projNote = (v, Y) => (v > 0
+  ? `<br><span class="proj-note"><i class="dot dot--proj"></i>그중 ${esc(state.projLabel)} 비용처리 ${plain(v)}${PROJECT_FIXED[Y] ? ` (행별 계산 · 그래프는 ${Y}년 확정 처리액 ${plain(PROJECT_FIXED[Y].amount)})` : ''}</span>` : '');
+
 function subHead({ eyebrow, title, total, note, filter }) {
   return `<div class="sub__title"><p class="eyebrow">${eyebrow}</p><h3>${title}</h3></div>
     ${bigMoney(total, 'sub__total')}
@@ -301,7 +360,7 @@ function subHead({ eyebrow, title, total, note, filter }) {
 }
 
 /* ----- 무형자산 상세 ----- */
-function renderDep({ Y, D, dep, depTotal }) {
+function renderDep({ Y, C, D, dep, depTotal }) {
   if (D.error) {
     $('#depHead').innerHTML = `<div class="sub__title"><h3>무형자산상각비</h3></div>${sectionError(D.error)}`;
     $('#depTable').innerHTML = '';
@@ -309,14 +368,14 @@ function renderDep({ Y, D, dep, depTotal }) {
   }
   const is = {
     all: () => true, active: (r) => r.st === 'active', planned: (r) => r.st === 'planned',
-    done: (r) => r.st === 'done', check: (r) => r.it.issues.length > 0,
+    done: (r) => r.st === 'done', check: (r) => r.it.issues.length > 0, chg: (r) => r.chg,
   };
   const searched = dep.filter((r) => matches(r.it));
   $('#depHead').innerHTML = subHead({
     eyebrow: 'INTANGIBLE ASSETS · 무형자산 상세', title: `${Y}년 무형자산상각비`, total: depTotal,
     note: `상각 중 ${dep.filter((r) => r.st === 'active').length}건 · 월평균 ${plain(depTotal / 12)}${yoy(depTotal, Dep.totalInYear(D.items, Y - 1), Y)}
-      · 총 취득금액 ${plain(sum(D.items, (i) => i.amount))}`,
-    filter: chips('dep', [['all', '전체'], ['active', '상각 중'], ['planned', '상각 예정'], ['done', '상각 완료'], ['check', '⚠ 확인 필요']],
+      · 총 취득금액 ${plain(sum(D.items, (i) => i.amount))}${projNote(sum(dep, (r) => r.proj), Y)}${chgLegend(C, dep.filter((r) => r.chg).length)}`,
+    filter: chips('dep', [['all', '전체'], ['chg', `${C}년 대비 변동`], ['active', '상각 중'], ['planned', '상각 예정'], ['done', '상각 완료'], ['check', '⚠ 확인 필요']],
       (k) => searched.filter(is[k]).length),
   });
   const rows = searched.filter(is[state.dep]).sort((a, b) => b.amount - a.amount || (b.it.amount ?? 0) - (a.it.amount ?? 0));
@@ -325,7 +384,7 @@ function renderDep({ Y, D, dep, depTotal }) {
       <th scope="col">항목</th><th scope="col" class="r">총 취득금액</th><th scope="col">상각기간</th><th scope="col" class="r">월 상각액</th>
       <th scope="col" class="r em">${Y}년 상각액</th><th scope="col" class="share-col">비중</th><th scope="col">상태</th><th scope="col">비고</th>
     </tr></thead>
-    <tbody>${rows.map((r) => depRow(r, depTotal)).join('') || emptyRow(8)}</tbody>
+    <tbody>${rows.map((r) => depRow(r, depTotal, C)).join('') || emptyRow(8)}</tbody>
     <tfoot><tr>
       <th scope="row">합계 ${rows.length}건</th>
       <td class="r">${money(sum(rows, (r) => r.it.amount))}</td><td></td>
@@ -335,23 +394,23 @@ function renderDep({ Y, D, dep, depTotal }) {
     </tr></tfoot>`;
 }
 
-function depRow({ it, st, months, amount }, total) {
+function depRow({ it, st, months, amount, proj, chg }, total, C) {
   const p = it.period;
   const mismatch = it.issues.find((x) => x.type === 'data' && x.msg.startsWith('월 상각액'));
-  return `<tr data-id="${esc(it.id)}" tabindex="0">
+  return `<tr data-id="${esc(it.id)}" tabindex="0"${chg ? ' class="is-chg"' : ''}>
     <th scope="row" class="name">${esc(it.name)}${issueIcon(it)}</th>
     <td class="r">${it.amount != null ? money(it.amount) : amountWarn(it)}</td>
     <td class="nowrap">${p.status === 'ok' ? `${fmtYM(p.start)} ~ ${fmtYM(p.end)}<small>${it.months}개월</small>` : periodWarn(it)}</td>
     <td class="r">${it.monthly != null ? money(it.monthly) : '<span class="dim">–</span>'}${mismatch ? ` <span class="warn" data-tip="${esc(mismatch.msg)}">⚠</span>` : ''}</td>
-    <td class="r em">${months ? `${money(amount)}<small>${months}개월</small>` : '<span class="dim">–</span>'}</td>
+    <td class="r em">${months ? `${money(amount)}<small>${months}개월</small>${projTag(proj)}` : '<span class="dim">–</span>'}${chg ? chgNote(C, Dep.amountInYear(it, C), Dep.projectInYear(it, C)) : ''}</td>
     <td>${share(amount, total)}</td>
     <td><span class="st st--${st}">${DEP_STATUS[st]}</span></td>
-    <td class="remark">${esc(it.remark)}</td>
+    <td class="remark">${esc(remarkIn(it, state.year))}</td>
   </tr>`;
 }
 
 /* ----- 전산용역 계약 현황 ----- */
-function renderSvc({ Y, S, svc, svcTotal }) {
+function renderSvc({ Y, C, S, svc, svcTotal }) {
   if (S.error) {
     $('#svcHead').innerHTML = `<div class="sub__title"><h3>전산용역비</h3></div>${sectionError(S.error)}`;
     $('#svcTable').innerHTML = '';
@@ -360,14 +419,13 @@ function renderSvc({ Y, S, svc, svcTotal }) {
   const counted = svc.filter((r) => r.v);
   const excluded = svc.filter((r) => r.it.excluded).length;
   const failed = svc.length - counted.length - excluded;
-  const is = { all: () => true, check: (r) => r.it.issues.length > 0, excluded: (r) => !!r.it.excluded };
+  const is = { all: () => true, chg: (r) => r.chg, check: (r) => r.it.issues.length > 0, excluded: (r) => !!r.it.excluded };
   const searched = svc.filter((r) => matches(r.it));
   $('#svcHead').innerHTML = subHead({
     eyebrow: 'IT SERVICE CONTRACTS · 전산용역 계약 현황', title: `${Y}년 전산용역비`, total: svcTotal,
     note: `집계 ${counted.filter((r) => r.v.total > 0).length}건 · 집계 제외 ${excluded}건${failed ? ` · <span class="warn">확인 필요 ${failed}건</span>` : ''}
-${yoy(svcTotal, svcYear(Y - 1), Y)}<br>동일 주기 연장 · 갱신마다 3~5% 인상(백만원 단위) 가정 포함 — ${[['현재 계약분', sum(counted, (r) => r.v.cur)], ['연장 가정분', sum(counted, (r) => r.v.ext)]]
-      .filter(([, a]) => inUnit(a) !== '0.0').map(([k, a]) => `${k} ${plain(a)}`).join(' + ')}`,
-    filter: chips('svc', [['all', '전체'], ['check', '⚠ 확인 필요'], ['excluded', '집계 제외']], (k) => searched.filter(is[k]).length),
+${yoy(svcTotal, svcYear(Y - 1), Y)}<br>동일 주기 연장 · 갱신마다 3~5% 인상(백만원 단위) 가정 포함 — ${partsText(Object.fromEntries(SVC_PARTS.map(([k]) => [k, sum(counted, (r) => r.v[k])])))}${projNote(sum(svc, (r) => r.proj), Y)}${chgLegend(C, svc.filter((r) => r.chg).length)} <small>(물가인상분 제외 · 연간 계약금액 기준)</small>`,
+    filter: chips('svc', [['all', '전체'], ['chg', `${C}년 대비 변동`], ['check', '⚠ 확인 필요'], ['excluded', '집계 제외']], (k) => searched.filter(is[k]).length),
   });
   const rank = (r) => (r.v ? r.v.total : r.it.excluded ? -2 : -1); // 집계 → 확인 필요 → 집계 제외
   const rows = searched.filter(is[state.svc]).sort((a, b) => rank(b) - rank(a) || (b.it.amount ?? 0) - (a.it.amount ?? 0));
@@ -376,33 +434,35 @@ ${yoy(svcTotal, svcYear(Y - 1), Y)}<br>동일 주기 연장 · 갱신마다 3~5%
       <th scope="col">System</th><th scope="col" class="r">계약금액</th><th scope="col" class="r em">${Y}년 금액</th>
       <th scope="col" class="share-col">비중</th><th scope="col">비고</th>
     </tr></thead>
-    <tbody>${rows.map((r) => svcRow(r, Y, svcTotal)).join('') || emptyRow(5)}</tbody>
+    <tbody>${rows.map((r) => svcRow(r, Y, svcTotal, C)).join('') || emptyRow(5)}</tbody>
     <tfoot><tr>
       <th scope="row">합계 ${rows.length}건</th>
-      <td class="r">${money(sum(rows, (r) => (r.it.amountOk ? r.it.amount : 0)))}</td>
+      <td class="r">${money(sum(rows, (r) => (r.it.amountOk ? contractIn(r.it, Y) : 0)))}</td>
       <td class="r em">${money(sum(rows, (r) => r.v?.total))}</td>
       <td>${share(sum(rows, (r) => r.v?.total), svcTotal)}</td>
       <td class="unit-note">집계 제외 · 확인 필요 항목은 합계에서 제외</td>
     </tr></tfoot>`;
 }
 
-function svcRow({ it, v }, Y, total) {
+function svcRow({ it, v, proj, pre, chg }, Y, total, C) {
   const cycle = it.cycle?.unit === 'months' && it.cycle.n !== 12 ? `<small>${Svc.cycleLabel(it.cycle)} 계약</small>` : '';
   const amountCell = it.excluded ? (it.amount != null ? money(it.amount) : '<span class="dim">–</span>')
-    : it.amountOk ? money(it.amount) + cycle
+    : it.amountOk ? money(contractIn(it, Y)) + cycle
       : it.amount != null ? `${money(it.amount)} ${issueIcon({ issues: it.issues.filter((x) => x.type === 'amount') })}`
         : amountWarn(it);
   const why = !it.cur ? periodTip(it) : it.issues.filter((x) => x.type === 'amount').map((x) => x.msg).join('\n');
   const yearCell = it.excluded ? `<span class="tag" data-tip="${esc(`집계 제외 — 비고: ${it.remark}`)}">${esc(it.excluded)}</span>`
     : !v ? `<span class="warn" data-tip="${esc(`집계 제외\n${why}`)}">⚠ 미집계</span>`
-      : v.total ? `<span class="num" data-tip="${esc(`${Y}년 ${won(v.total)}\n현재 계약분 ${won(v.cur)}\n연장 가정분 ${won(v.ext)}`)}">${inUnit(v.total)}<span class="u">${unit.label}</span></span>`
-        : '<span class="dim">–</span>';
-  return `<tr data-id="${esc(it.id)}" tabindex="0">
+      : v.total ? `<span class="num" data-tip="${esc([`${Y}년 ${won(v.total)}`, ...SVC_PARTS.filter(([k]) => v[k]).map(([k, l]) => `${l} ${won(v[k])}`)].join('\n'))}">${inUnit(v.total)}<span class="u">${unit.label}</span></span>${projTag(proj)}`
+        : leasedIn(it, Y) || zeroYear(it, Y) ? `${money(0)}<small class="proj-tag" data-tip="${esc(`비고: ${remarkIn(it, Y)}`)}">${leasedIn(it, Y) ? '리스계약 기간' : '비고'} · 0원</small>`
+          : '<span class="dim">–</span>';
+  return `<tr data-id="${esc(it.id)}" tabindex="0"${chg ? ' class="is-chg"' : ''}>
     <th scope="row" class="name">${esc(it.name)}${issueIcon(it)}</th>
     <td class="r">${amountCell}</td>
-    <td class="r em">${yearCell}</td>
+    <td class="r em">${yearCell}${pre ? `<small class="chg-note" data-tip="${esc(`Excel 계약(${Svc.fmtDn(it.cur.s)}~) 시작 전 비고의 Project 비용처리 기간에 새로 발생하는 비용`)}">신규 · 계약 전 ${esc(state.projLabel)} 비용</small>`
+      : chg ? chgNote(C, Svc.yearTotal(it, C), Svc.projectInYear(it, C), leasedIn(it, C)) : ''}</td>
     <td>${share(v?.total ?? 0, total)}</td>
-    <td class="remark">${esc(it.remark)}</td>
+    <td class="remark">${esc(remarkIn(it, Y))}</td>
   </tr>`;
 }
 
@@ -420,6 +480,8 @@ const dwNotes = (notes) => notes.filter(Boolean).map((n) => `<p class="dw-note">
 const dwRaw = (it) => `<details class="dw-raw"><summary>원본 Excel 값 (${esc(it.sheet)} ${it.rowNo}행)</summary><table class="mini src"><tbody>${it.raw.map((r) =>
   `<tr><th scope="row">${esc(r.label)}</th><td class="addr">${esc(r.addr)}</td><td>${esc(r.text) || '<span class="dim">(공란)</span>'}</td></tr>`).join('')}</tbody></table></details>`;
 const moneyText = (v) => `${inUnit(v)} <small>${unit.label}</small>`;
+const dwProjTag = (it) => (it.project ? [`<span class="tag tag--proj">${esc(it.project.name)} Project 비용처리 · ${projRange(it.project)}</span>`] : []);
+const dwProjSub = (it, v) => (v > 0 ? ` · 그중 ${esc(it.project.name)} Project ${plain(v)}` : '');
 
 /** 작은 막대 그래프. 값이 0인 칸은 금액·막대를 표시하지 않음 */
 function barStrip(items, tone, selected) {
@@ -440,8 +502,8 @@ function depDetail(it) {
   const pct = ok ? ((done / it.months) * 100).toFixed(1) : 0;
   const monthlyBasis = it.monthlyExcel != null
     ? `Excel 입력값${it.monthlyCalc != null ? ` (계산값 ${plain(it.monthlyCalc)})` : ''}` : '총 취득금액 ÷ 총 상각개월';
-  return dwHead(it, '무형자산', [`<span class="st st--${st}">${DEP_STATUS[st]}</span>`])
-    + (ok ? dwKpi(`${Y}년 상각액`, Dep.amountInYear(it, Y), `월 ${plain(it.monthly)} × ${Dep.monthsInYear(it, Y)}개월`)
+  return dwHead(it, '무형자산', [`<span class="st st--${st}">${DEP_STATUS[st]}</span>`, ...dwProjTag(it)])
+    + (ok ? dwKpi(`${Y}년 상각액`, Dep.amountInYear(it, Y), `월 ${plain(it.monthly)} × ${Dep.monthsInYear(it, Y)}개월${dwProjSub(it, Dep.projectInYear(it, Y))}`)
       : dwKpiNa(`${Y}년 상각액`, '⚠ 계산 불가', '금액 또는 상각기간 확인 필요'))
     + dwTiles([
       ['총 취득금액', it.amount != null ? moneyText(it.amount) : amountWarn(it)],
@@ -455,21 +517,26 @@ function depDetail(it) {
     })), 'dep', Y)) : '')
     + dwSec('산정 정보', '', kvList([
       ['월 상각액 기준', monthlyBasis],
-      ['비고', esc(it.remark) || '–'],
+      ...(it.project ? [['Project 비용처리', `${esc(it.project.name)} Project · ${projRange(it.project)}<small>상각액은 그대로 집계하고 이 기간분을 Project 비용으로 구분</small>`]] : []),
+      ['비고', esc(remarkIn(it, Y)) || '–'],
     ]))
     + dwRaw(it);
 }
 
 function svcDetail(it) {
   const Y = state.year, v = Svc.yearView(it, Y), sp = Svc.spendInYear(it, Y);
-  const tags = [];
+  const tags = dwProjTag(it);
   if (it.excluded) tags.push(`<span class="tag">집계 제외 · ${esc(it.excluded)}</span>`);
   if (it.cycle) tags.push(`<span class="tag tag--line">${Svc.cycleLabel(it.cycle)} 계약</span>`);
   if (v) tags.push('<span class="tag tag--line">연장 가정 · 갱신 시 3~5% 인상</span>');
+  const prior = v ? Svc.priorPeriods(it) : [];
+  const leaseRange = it.lease && projRange(it.lease);
+  if (it.lease) tags.push(`<span class="tag tag--proj">리스계약 기간 · ${leaseRange} · 비용 0원</span>`);
+  if (it.lumpSum) tags.push('<span class="tag tag--line">일시납 · 지급월 비용 인식</span>');
 
   const kpi = it.excluded ? dwKpiNa(`${Y}년 금액`, `집계 제외 — ${esc(it.excluded)}`, esc(it.remark))
-    : v ? dwKpi(`${Y}년 금액`, v.total, [['현재 계약분', v.cur], ['연장 가정분', v.ext]]
-      .filter(([, a]) => inUnit(a) !== '0.0').map(([k, a]) => `${k} ${plain(a)}`).join(' + '))
+    : v ? dwKpi(`${Y}년 금액`, v.total, !v.total && (leasedIn(it, Y) || zeroYear(it, Y))
+      ? `${leasedIn(it, Y) ? `리스계약 기간(${leaseRange}) — ` : ''}비고: ${esc(remarkIn(it, Y))}` : partsText(v) + dwProjSub(it, Svc.projectInYear(it, Y)))
       : dwKpiNa(`${Y}년 금액`, '⚠ 미집계', '금액 또는 계약기간 확인 필요');
 
   let monthly = '';
@@ -481,7 +548,7 @@ function svcDetail(it) {
     monthly = dwSec(`${Y}년 월별 지출`, sp ? '지출 월 기준 · 지출이 없는 달은 비워 둠' : '지출 월 미기재 → 계약기간 월할 안분',
       barStrip(months.map((a, i) => ({
         key: i + 1, name: MONTHS[i], value: a,
-        tip: `${Y}.${pad(i + 1)} 지출 ${won(a)}${sp?.ext[i] ? ' (연장 가정분)' : ''}`,
+        tip: `${Y}.${pad(i + 1)} 지출 ${won(a)}${SPEND_KIND[sp?.kind[i]] ?? ''}`,
       })), 'svc')
       + `<p class="dw-sum">지출 합계 <b>${moneyText(total)}</b> · ${paidMonths}개월 지출</p>`
       + dwNotes([
@@ -490,6 +557,11 @@ function svcDetail(it) {
         rule?.lumps.some((l) => !l.month) && `연 1회 지급분의 지급월이 적혀 있지 않아 계약 시작월(${it.period.start.m}월)로 가정했습니다.`,
         rule?.monthly === 'even' && rule.stated != null
           && `Excel 기재 "매월 약 ${rule.stated.toLocaleString('ko-KR')}원" → 월 합계가 계약금액과 같도록 계약금액을 균등 분할해 표시했습니다.`,
+        total > 0 && rule && !rule.monthly && rule.lumps.length > 1 && rule.lumps.every((l) => l.month && l.amount == null)
+          && `연 ${rule.lumps.length}회 지출(${rule.lumps.map((l) => `${l.month}월`).join('·')}) → 계약금액을 ${rule.lumps.length}등분해 표시했습니다.`,
+        prior.length && `계약 시작(${Svc.fmtDn(it.cur.s)}) 전 ${Svc.fmtDn(prior[0].s)} ~ ${Svc.fmtDn(prior.at(-1).e)}에도 같은 금액(${plain(it.amount)})·같은 주기로 비용이 발생한다고 가정했습니다 (비고의 ${esc(it.project.name)} Project 비용처리 기간 ${projRange(it.project)}).`,
+        it.lumpSum && `비고의 '일시납' → 계약기간 월할 안분 대신 지급월에 전액을 비용으로 인식합니다.`,
+        it.lease && `비고의 리스계약 기간(${leaseRange})은 비용 0원으로 표시합니다. 이후는 계약금액에서 갱신마다 3~5% 인상한 금액을 가정합니다.`,
       ]));
   }
 
@@ -504,11 +576,16 @@ function svcDetail(it) {
       ['계약 주기 판단', `${Svc.cycleLabel(it.cycle)}<small>${esc(it.cycle.basis)}</small>`],
     );
   }
-  info.push(['비고', esc(it.remark) || '–']);
+  if (it.lease) info.push(['리스계약 기간', `${leaseRange}<small>이 기간 비용 0원 (비고 기준)</small>`]);
+  if (it.project) {
+    info.push(['Project 비용처리', `${esc(it.project.name)} Project · ${projRange(it.project)}<small>${prior.length
+      ? `계약 전 기간 ${prior.map((p) => `${Svc.fmtDn(p.s)} ~ ${Svc.fmtDn(p.e)}`).join(', ')} 포함` : '금액은 그대로 집계하고 이 기간분을 Project 비용으로 구분'}</small>`]);
+  }
+  info.push(['비고', esc(remarkIn(it, Y)) || '–']);
 
   return dwHead(it, '전산용역비', tags) + kpi
     + dwTiles([
-      ['계약금액', it.amount != null ? moneyText(it.amount) : amountWarn(it)],
+      ['계약금액', it.amount != null ? `${moneyText(contractIn(it, Y))}${zeroYear(it, Y) ? `<small> · ${Y}년 0원 (Excel ${plain(it.amount)})</small>` : ''}` : amountWarn(it)],
       ['지출 방식', esc(it.spendText.replace(/\s+/g, ' ')) || '<span class="dim">미기재</span>'],
       ['다음 갱신 금액', next?.amount ? `${moneyText(next.amount)}<small> · ${it.nextAmount != null ? '차기계약금액' : `+${nextRate}% · ${Svc.fmtDn(next.s).slice(0, 7)}`}</small>` : '–'],
     ])
