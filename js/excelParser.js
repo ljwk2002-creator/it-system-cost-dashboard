@@ -56,8 +56,6 @@ const PROJECT_RANGE = /(\d{4})\s*(?:[.\-/년]\s*(\d{1,2})(?:\s*[.\-/월]\s*\d{1,
 
 // 비고의 '리스계약 중' 지시: 그 기간 비용은 0원. 예) "2026년~2027년 LNIC Project에서 205백만원 리스계약 중"
 const LEASE = /리스\s*계약\s*중/;
-// 비고 · 지출 월의 '일시납': 계약기간 월할 안분 대신 지급월에 전액 비용 인식
-const LUMP_SUM = /일시납/;
 
 const SINGLE = /(\d{4})\s*(?:년|[.\-/]\s*(\d{1,2}))/; // 기간 대신 한 해(2027년) 또는 한 달(2027.12)
 // 특정 연도 화면에만 보이는 비고 줄. 예) "2026년: 첫해 유지보수비 0원" ('0원'이 있으면 그해 계약금액·비용 0원)
@@ -159,16 +157,30 @@ function readGrid(ws, utils) {
   return { grid, r0: s.r, c0: s.c };
 }
 
+// 연도별 열. 예) "2026년 금액" · "2026년 지출 월" (그해 금액 · 지출 월을 Excel 총 금액 · 지출 월 대신 사용)
+const YEAR_COL = /^(\d{4})년?(금액|총금액|지출월)$/;
+
 function findHeader(grid) {
   for (let r = 0; r < Math.min(grid.length, 30); r++) {
-    const cols = {};
+    const cols = {}, years = [];
     grid[r].forEach((cell, c) => {
-      const f = FIELD.get(norm(text(cell)));
+      const k = norm(text(cell));
+      const y = k.match(YEAR_COL);
+      if (y) { years.push({ c, year: +y[1], kind: y[2] === '지출월' ? 'spend' : 'amount' }); return; }
+      const f = FIELD.get(k);
       if (f && cols[f] == null) cols[f] = c;
     });
-    if (cols.itemName != null && Object.keys(cols).length >= 3) return { r, cols };
+    if (cols.itemName != null && Object.keys(cols).length >= 3) return { r, cols, years };
   }
   return null;
+}
+
+/** 연도별 금액 셀: 숫자(0 포함)만, '-' · 공란은 없음 */
+function yearAmount(c) {
+  if (!c || c.t === 'e') return null;
+  if (typeof c.v === 'number') return c.v;
+  const n = Number(text(c).replace(/[₩,\s원]/g, ''));
+  return text(c) && Number.isFinite(n) ? n : null;
 }
 
 function findSheet(names, keywords) {
@@ -182,7 +194,7 @@ function findSheet(names, keywords) {
 /* ---------- Sheet → items ---------- */
 function parseSheet(wb, key, utils) {
   const spec = SHEETS[key];
-  const out = { key, label: spec.label, sheet: null, items: [], warnings: [], excelTotal: null, error: null };
+  const out = { key, label: spec.label, sheet: null, items: [], warnings: [], excelTotal: null, error: null, yearCols: [] };
   out.sheet = findSheet(wb.SheetNames, spec.keywords);
   if (!out.sheet) {
     out.error = `'${spec.label}' Sheet를 찾을 수 없습니다. (Workbook Sheet: ${wb.SheetNames.join(', ')})`;
@@ -200,7 +212,11 @@ function parseSheet(wb, key, utils) {
     return out;
   }
 
-  const labels = Object.entries(header.cols).sort((a, b) => a[1] - b[1]).map(([f, c]) => ({ f, c, label: text(grid[header.r][c]) }));
+  const labels = [...Object.entries(header.cols), ...header.years.map(({ c }) => [null, c])]
+    .sort((a, b) => a[1] - b[1]).map(([f, c]) => ({ f, c, label: text(grid[header.r][c]) }));
+  out.yearCols = [...new Set(header.years.filter((y) => y.kind === 'amount').map((y) => y.year))].sort();
+  const byYear = (row, kind, read) => Object.fromEntries(header.years.filter((y) => y.kind === kind)
+    .map((y) => [y.year, read(row[y.c])]).filter(([, v]) => v != null && v !== ''));
   let afterTotal = false;
   for (let r = header.r + 1; r < grid.length; r++) {
     const row = grid[r], rowNo = r0 + r + 1;
@@ -233,8 +249,9 @@ function parseSheet(wb, key, utils) {
       ...(({ base, notes, zeroYears }) => ({
         remarkBase: base, yearNotes: notes, zeroYears, project: parseProject(base), lease: parseLease(base),
       }))(parseYearNotes(text(cell('remark')))),
-      lumpSum: LUMP_SUM.test(`${text(cell('remark'))} ${text(cell('spend'))}`),
       spendText: text(cell('spend')),
+      yearAmounts: byYear(row, 'amount', yearAmount),
+      yearSpend: byYear(row, 'spend', text),
       monthlyExcel: null, nextAmount: optionalNumber(cell('nextAmount')),
       raw: labels.map(({ c, label }) => ({ label, addr: utils.encode_cell({ r: r0 + r, c: c0 + c }), text: text(row[c]) })),
       issues: [],
