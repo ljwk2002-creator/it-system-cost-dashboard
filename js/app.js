@@ -338,14 +338,14 @@ function renderCharts({ Y, D, S }) {
   const range = pYears.length > 1 ? `${pYears[0]}~${pYears.at(-1)}년` : `${pYears[0]}년`;
   $('#projSum').innerHTML = pYears.length ? `<p class="proj-sum__head"><i class="dot dot--proj"></i>${esc(P)} 비용 합계 <small>${range}</small></p>
     <p class="proj-sum__value" data-tip="${esc(pYears.map((y) => `${y}년 ${won(projYear(y))}`).join('\n'))}">${inUnit(pTotal)}<span class="u">${unit.label}</span></p>` : '';
-  // 그래프 아래 비고: 확정 처리액이 있는 해 — "판관비로 처리될 비용 (그해 합계) 중, LNIC … / 기타 …" (여러 해면 연도를 앞에 붙임)
+  // 그래프 아래 비고: 확정 처리액이 있는 해 — "YYYY년 판관비로 처리될 비용 (그해 합계) 중, LNIC … / 기타 …"
   const noteYears = state.years.filter((y) => PROJECT_FIXED[y] || OTHER_PROJECT.years[y]);
   $('#projNote').innerHTML = noteYears.map((y) => {
     const parts = [
       PROJECT_FIXED[y] && `<span><i class="dot dot--proj"></i>${esc(P)} ${plain(PROJECT_FIXED[y].amount)}</span>`,
       OTHER_PROJECT.years[y] && `<span class="other"><i class="dot dot--other"></i>${esc(OTHER_PROJECT.label)} ${plain(OTHER_PROJECT.years[y])}</span>`,
     ].filter(Boolean);
-    return `${noteYears.length > 1 ? `${y}년 ` : ''}판관비로 처리될 비용 ${plain(depOf(y) + svcOf(y))} 중,<br>${parts.join(' / ')}`;
+    return `${y}년 판관비로 처리될 비용 ${plain(depOf(y) + svcOf(y))} 중,<br>${parts.join(' / ')}`;
   }).join('<br>');
   document.querySelectorAll('.legend__other').forEach((el) => {
     el.hidden = !state.years.some((y) => OTHER_PROJECT.years[y] > 0);
