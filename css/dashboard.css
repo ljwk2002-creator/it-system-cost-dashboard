@@ -139,6 +139,14 @@ main { display: grid; gap: 16px; max-width: 1760px; margin: 0 auto; padding: 20p
 .chart .proj { fill: url(#projHatch); stroke: #CA8A04; stroke-width: 1; stroke-opacity: .7; pointer-events: none; }
 .chart .proj__v { font-size: 11px; font-weight: 800; fill: #8A5A00; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
 .chart .proj__v.is-in { text-anchor: middle; }
+/* 기타 Project (LNIC와 별도): 붉은 빗금 */
+.dot--other { background: repeating-linear-gradient(-45deg, rgba(248, 113, 113, .22) 0 2px, rgba(220, 38, 38, .7) 2px 3.5px); box-shadow: inset 0 0 0 1px #DC2626; }
+.chart .proj.proj--other { fill: url(#otherHatch); stroke: #DC2626; }
+.chart .proj__v.proj--other { fill: #B91C1C; }
+.legend__other[hidden] { display: none; }
+.proj-foot { line-height: 1.6; }
+.proj-foot .dot { margin-right: 4px; vertical-align: -1px; }
+.proj-foot .other { color: #B91C1C; }
 .chart .proj__u { font-size: 9px; font-weight: 600; }
 .chart .compact .proj__v { font-size: 9px; }
 .chart .compact .proj__u { font-size: 7.5px; }

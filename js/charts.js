@@ -1,9 +1,10 @@
 /**
  * charts.js — 연도별 Column Chart (의존성 없는 SVG)
  * 입력은 숫자와 호출자가 만든 짧은 문자열(연도·금액·단위)뿐이다 (Excel 원문 텍스트는 받지 않음).
- * data: [{ key, name, value, parts?, proj? }]  selected: 강조할 key
+ * data: [{ key, name, value, parts?, proj?, other? }]  selected: 강조할 key
  *   parts: [{ cls, value }] 가 있으면 아래부터 쌓은 누적 막대 (value = 합계)
- *   proj: 그중 Project 비용 → 막대 위쪽에 반투명 해치 박스(index.html #projHatch) + 박스 우측 상단에 금액(projLabel)
+ *   proj · other: 그중 Project 비용 → 막대 위쪽부터 차례로 반투명 해치 박스(index.html #projHatch 노랑 · #otherHatch 빨강)
+ *     + 박스 우측 상단에 금액(projLabel(금액))
  * 데이터 레이블은 2줄: 금액(굵게) / 단위
  */
 export function columnChart({ data, selected = null, width, height = 270, label, unit, tip, projLabel }) {
@@ -26,15 +27,19 @@ export function columnChart({ data, selected = null, width, height = 270, label,
       top -= ph;
       return `<rect class="col ${p.cls}" x="${cx - bw / 2}" y="${top}" width="${bw}" height="${ph}" rx="${d.parts ? 0 : 3}"/>`;
     }).join('');
-    const ph = d.proj > 0 ? Math.min(h, Math.max(3, (d.proj / max) * ih)) : 0;
-    if (ph) {
+    let by = base - h; // 해치 박스: 막대 꼭대기부터 아래로 (proj → other)
+    const boxes = [['', d.proj], [' proj--other', d.other]].filter(([, v]) => v > 0).map(([cls, v]) => {
+      const ph = Math.min(base - by, Math.max(3, (v / max) * ih));
       const inside = compact && ph >= 22; // 좁은 화면: 박스 안 가운데 (막대 사이 공간이 부족)
       const lx = inside ? cx : cx + bw / 2 + 3;
-      projLabels.push(`<text class="proj__v${inside ? ' is-in' : ''}" x="${lx}" y="${base - h + (inside ? 11 : 9)}">${projLabel(d)}<tspan class="proj__u" x="${lx}" dy="${inside ? 9 : 11}">${unit}</tspan></text>`);
-    }
+      projLabels.push(`<text class="proj__v${cls}${inside ? ' is-in' : ''}" x="${lx}" y="${by + (inside ? 11 : 9)}">${projLabel(v)}<tspan class="proj__u" x="${lx}" dy="${inside ? 9 : 11}">${unit}</tspan></text>`);
+      const rect = `<rect class="proj${cls}" x="${cx - bw / 2}" y="${by}" width="${bw}" height="${ph}"/>`;
+      by += ph;
+      return rect;
+    }).join('');
     return `<g class="bar${sel ? ' is-sel' : ''}" data-key="${d.key}" data-tip="${tip(d)}" tabindex="0" role="button" aria-label="${d.name} ${label(d)} ${unit}">
       <rect class="hit" x="${sx}" y="0" width="${slot}" height="${height}"/>
-      ${cols}${ph ? `<rect class="proj" x="${cx - bw / 2}" y="${base - h}" width="${bw}" height="${ph}"/>` : ''}
+      ${cols}${boxes}
       <text class="val" x="${cx}" y="${base - h - 21}">${label(d)}<tspan class="val__u" x="${cx}" dy="14">${unit}</tspan></text>
       <text class="xl" x="${cx}" y="${height - 8}">${d.name}</text>
     </g>`;

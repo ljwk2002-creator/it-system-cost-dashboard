@@ -16,6 +16,8 @@ const ISSUE = { date: '날짜 확인 필요', amount: '금액 확인 필요', pe
 // 연도별 Project 확정 처리액: 그해 Project 비용(무형자산+전산용역)은 비고 기준 행별 계산 대신 이 금액으로 표기.
 // Excel에 없는 경영 확정값이라 코드에 둔다 (2026-10-01 지시).
 const PROJECT_FIXED = { 2026: { amount: 405e6, note: '판관비로 처리될 비용 중 405백만원 LNIC Project로 처리' } };
+// 기타 Project 확정 처리액: IT System 비용 합계 그래프에만 붉은 빗금 박스로 표기 (LNIC와 별도 · 합계 표시 없음, 2026-10-13 지시)
+const OTHER_PROJECT = { label: '기타(SIPCHEM, APOC) Project', years: { 2026: 276e6 } };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -306,7 +308,8 @@ function drawChart(el) {
 }
 function renderCharts({ Y, D, S }) {
   const P = state.projLabel;
-  const common = { selected: Y, unit: unit.label, label: (d) => inUnit(d.value), projLabel: (d) => inUnit(d.proj) };
+  const common = { selected: Y, unit: unit.label, label: (d) => inUnit(d.value), projLabel: inUnit };
+  const otherTip = (d) => (d.other > 0 ? `\n▨ 그중 ${OTHER_PROJECT.label} 비용 ${won(d.other)} (확정 처리액)` : '');
   const depOf = (y) => (D.error ? 0 : Dep.totalInYear(D.items, y));
   const svcOf = (y) => (S.error ? 0 : svcYear(y));
   const projTip = (d) => (d.proj > 0 ? `\n▨ 그중 ${P} 비용 ${won(d.proj)}${PROJECT_FIXED[d.key] ? ' (확정 처리액)' : ''}` : '');
@@ -314,9 +317,9 @@ function renderCharts({ Y, D, S }) {
     ...common,
     data: state.years.map((y) => {
       const parts = [{ cls: 'seg--dep', value: depOf(y) }, { cls: 'seg--svc', value: svcOf(y) }];
-      return { key: y, name: String(y), value: parts[0].value + parts[1].value, parts, proj: projYear(y) };
+      return { key: y, name: String(y), value: parts[0].value + parts[1].value, parts, proj: projYear(y), other: OTHER_PROJECT.years[y] ?? 0 };
     }),
-    tip: (d) => `${d.key}년 IT System 비용 합계 ${won(d.value)}\n무형자산상각비 ${won(d.parts[0].value)}\n전산용역비 ${won(d.parts[1].value)} (${svcBasis(d.key)})${projTip(d)}\n선택하면 상세 내역`,
+    tip: (d) => `${d.key}년 IT System 비용 합계 ${won(d.value)}\n무형자산상각비 ${won(d.parts[0].value)}\n전산용역비 ${won(d.parts[1].value)} (${svcBasis(d.key)})${projTip(d)}${otherTip(d)}\n선택하면 상세 내역`,
   });
   if (D.error) {
     chartArgs.delete('depYearChart');
@@ -335,8 +338,19 @@ function renderCharts({ Y, D, S }) {
   const range = pYears.length > 1 ? `${pYears[0]}~${pYears.at(-1)}년` : `${pYears[0]}년`;
   $('#projSum').innerHTML = pYears.length ? `<p class="proj-sum__head"><i class="dot dot--proj"></i>${esc(P)} 비용 합계 <small>${range}</small></p>
     <p class="proj-sum__value" data-tip="${esc(pYears.map((y) => `${y}년 ${won(projYear(y))}`).join('\n'))}">${inUnit(pTotal)}<span class="u">${unit.label}</span></p>` : '';
-  $('#projNote').innerHTML = pYears.filter((y) => PROJECT_FIXED[y])
-    .map((y) => `▨ ${y}년 ${esc(P)} 비용 ${plain(PROJECT_FIXED[y].amount)} — 비고: ${esc(PROJECT_FIXED[y].note)}`).join('<br>');
+  // 그래프 아래 비고: 확정 처리액이 있는 해 — "판관비로 처리될 비용 (그해 합계) 중, LNIC … / 기타 …" (여러 해면 연도를 앞에 붙임)
+  const noteYears = state.years.filter((y) => PROJECT_FIXED[y] || OTHER_PROJECT.years[y]);
+  $('#projNote').innerHTML = noteYears.map((y) => {
+    const parts = [
+      PROJECT_FIXED[y] && `<span><i class="dot dot--proj"></i>${esc(P)} ${plain(PROJECT_FIXED[y].amount)}</span>`,
+      OTHER_PROJECT.years[y] && `<span class="other"><i class="dot dot--other"></i>${esc(OTHER_PROJECT.label)} ${plain(OTHER_PROJECT.years[y])}</span>`,
+    ].filter(Boolean);
+    return `${noteYears.length > 1 ? `${y}년 ` : ''}판관비로 처리될 비용 ${plain(depOf(y) + svcOf(y))} 중,<br>${parts.join(' / ')}`;
+  }).join('<br>');
+  document.querySelectorAll('.legend__other').forEach((el) => {
+    el.hidden = !state.years.some((y) => OTHER_PROJECT.years[y] > 0);
+    el.lastChild.textContent = OTHER_PROJECT.label;
+  });
   document.querySelectorAll('.legend__proj').forEach((el) => {
     el.hidden = !(el.closest('.chart-card--dep') ? state.years.some((y) => projDepShown(y) > 0) : pYears.length);
     el.lastChild.textContent = P;
